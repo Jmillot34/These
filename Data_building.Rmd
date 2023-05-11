@@ -1,0 +1,1410 @@
+---
+title: "Data_Creation"
+output: html_document
+date: "2022-10-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+	eval = T,
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE
+)
+```
+
+# Chargement des packages
+
+```{r packages_analysis, echo = TRUE}
+## General
+library(tidyverse)
+library(readxl)
+library(readr)
+library(janitor)
+library(cleaner)
+library(compareDF)
+
+## Nombre de NA
+library(naniar)
+
+## Correlation 
+library(Hmisc)
+library(corrplot)
+library(PerformanceAnalytics)
+library(gplots)
+
+##Spatials
+library(rgdal)
+library(ggspatial)
+library(sp)
+library(sf)
+library(rgeos)
+library(raster)
+
+library(stringi)
+library(here)
+library(gdalUtilities)
+library(terrainr)
+library(terra)
+library(mapview)
+library(tmap)
+library(tmaptools)
+
+
+## Models
+library(mgcv)
+library(performance)
+library(spdep)
+library(sdmpredictors)
+library(biomod2)
+library(MuMIn)
+
+# Plot
+library(cowplot)
+library(ggpubr)
+library(ggeffects)
+library(gratia)
+
+# Other
+library(udunits2)
+library(R.utils)
+library(klaR)
+library(scales)
+library(PresenceAbsence) # Sert à calculer les treshold 
+library(dismo)
+```
+
+# Functions
+
+## DD GSA
+To convert decimal degree minute coordinates in decimal degree
+
+```{r}
+# int=data$intslon[1]
+# dec=data$decslon[1]
+DD_GSA <- function(int,dec) {
+  int <- as.character(int)
+  dec <- as.character(dec)
+  
+  if(is.na(int) == F) {
+    
+    if(nchar(int) == 3){
+      
+      degrees <- as.numeric(substr(int,1,1))
+      decimaldegrees <- as.numeric(paste0(substr(int,2,1000),".",dec, sep=""))
+    }
+    if(nchar(int) == 4){ 
+      
+      degrees <- as.numeric(substr(int,1,2))
+      decimaldegrees <- as.numeric(paste0(substr(int,3,1000),".",dec, sep=""))
+    }
+    if(nchar(int) == 2){
+      
+      degrees <- 0
+      decimaldegrees <- as.numeric(paste0(int,".",dec,sep=""))
+    }
+    
+    coordDD <- degrees + (decimaldegrees/60)
+  }
+  
+  else { coordDD <- NA 
+  }
+  
+  return(coordDD)
+} 
+```
+
+## Fncols
+To add colums that are missing. If some columns in the dataframe are missing, there are created and filled with NA => Every GSA will contain the same columns. 
+
+```{r}
+fncols <- function(data, cname) {
+    add <-cname[!cname%in%names(data)]
+    
+    if(length(add)!=0) data[add] <- NA
+    data
+}
+```
+
+## Clean class
+To unify column type between different GSA
+
+```{r}
+clean_class <- function(data) {
+    data$AREA <- as.character(data$AREA)
+    data$SOURCE <- as.character(data$SOURCE)
+    data$WING_OPENING <- as.numeric(data$WING_OPENING)
+    data$TOTAL_NUMBER_IN_HAUL <- as.numeric(data$TOTAL_NUMBER_IN_HAUL)
+    data$TOTAL_WEIGHT_IN_HAUL <- as.numeric(data$TOTAL_WEIGHT_IN_HAUL)
+    data$SPECIES <- as.character(data$SPECIES)
+    data$SHOOTING_LONGITUDE <- as.character(data$SHOOTING_LONGITUDE)
+    data$SHOOTING_LATITUDE <- as.character(data$SHOOTING_LATITUDE)
+    data$HAULING_LONGITUDE <- as.character(data$HAULING_LONGITUDE)
+    data$HAULING_LATITUDE <- as.character(data$HAULING_LATITUDE)
+    data$GENUS <- as.character(data$GENUS)
+    data$DISTANCE <- as.numeric(data$DISTANCE)
+    data$LON <- as.numeric(data$LON)
+    data$LAT <- as.numeric(data$LAT)
+    data$N_KM2 <- as.numeric(data$N_KM2)
+    data$G_KM2 <- as.numeric(data$G_KM2)
+    data$SWEPT_AREA <- as.numeric(data$SWEPT_AREA)
+    data$HAULING_DEPTH <- as.numeric(data$HAULING_DEPTH)
+    data$SHOOTING_DEPTH <- as.numeric(data$SHOOTING_DEPTH)
+    data$DEPTH <- as.numeric(data$DEPTH)
+    
+    
+    return(data)
+    
+}
+```
+
+## DD_full 
+To separate columns with coordinates into two columns : integer part and decimal part 
+Applying DD_GSA to convert new columns in decimal degree 
+
+```{r}
+DD_full <- function(data) {
+    
+    #Sep Shooting long and lat
+    data<- data %>%
+        separate(SHOOTING_LATITUDE, into = c("intslat", "decslat"), 
+                 remove = F) %>% 
+        separate(SHOOTING_LONGITUDE, into = c("intslon","decslon"),
+                 remove = F)
+
+    #Hauling
+    data <- data %>% 
+        separate(HAULING_LONGITUDE, into = c("inthlon", "dechlon"), 
+                 remove = F) %>%
+        separate(HAULING_LATITUDE, into = c("inthlat","dechlat"), 
+                 remove = F)
+    
+    data$HlonDD <- mapply(DD_GSA,data$inthlon,data$dechlon)
+    data$HlatDD <- mapply(DD_GSA,data$inthlat,data$dechlat)
+    data$SlonDD <- mapply(DD_GSA,data$intslon,data$decslon)
+    data$SlatDD <- mapply(DD_GSA,data$intslat,data$decslat)
+    
+    data$lonDD <- ((data$HlonDD + data$SlonDD)/2)
+    data$latDD <- ((data$HlatDD + data$SlatDD)/2)
+    
+    data$lonDD <- ifelse(data$AREA == "GSA1",-data$lonDD,data$lonDD)
+    data$lonDD <- ifelse(data$AREA == "GSA2" & data$latDD < 36.70,-data$lonDD,data$lonDD)
+    
+    data$LON <- data$lonDD
+    data$LAT <- data$latDD
+    
+    drop = c("inthlon","intslon","dechlon","decslon","inthlat","intslat","decslat","dechlat","lonDD","latDD",
+             "HlonDD","SlonDD","HlatDD","SlatDD")
+    
+    data <-  data[,!(names(data) %in% drop)]
+    
+    return(data)
+}
+```
+
+## Cols_interest
+
+```{r}
+#Columns to keep in the final medits dataset
+Cols_interest <- c("HAUL_ID","AREA","SOURCE","SHOOTING_LATITUDE","SHOOTING_LONGITUDE",
+                   "HAULING_LATITUDE","HAULING_LONGITUDE","DISTANCE","WING_OPENING","HAULING_DEPTH","SHOOTING_DEPTH","DEPTH",
+                   "GENUS","SPECIES","TOTAL_WEIGHT_IN_HAUL","TOTAL_NUMBER_IN_HAUL","LON","LAT","SWEPT_AREA","N_KM2","G_KM2")
+Cols_interest_if_coord <- c("HAUL_ID","AREA","SHOOTING_LATITUDE","SHOOTING_LONGITUDE",
+                   "HAULING_LATITUDE","HAULING_LONGITUDE","DISTANCE","WING_OPENING",
+                   "GENUS","SPECIES","TOTAL_WEIGHT_IN_HAUL","TOTAL_NUMBER_IN_HAUL","LON","LAT", "SWEPT_AREA")
+Cols_interest_TA <- c("AREA","YEAR","HAUL_NUMBER","SHOOTING_LATITUDE","SHOOTING_LONGITUDE",
+                   "HAULING_LATITUDE","HAULING_LONGITUDE","DISTANCE","WING_OPENING","VALIDITY")
+
+Cols_ROV <- c("ID","LATITUDE","LONGITUDE","DEPTH_m","DATE","ISID_PRESENCE")
+```
+
+## Clarity
+
+```{r}
+# To format TA and TB and build a final database 
+clarity <- function (G_TA, G_TB) {
+  
+  G_clean <- left_join(G_TA, G_TB, by = c("AREA","YEAR","HAUL_NUMBER")) %>% 
+  # SURVEY and AREA variable added
+  mutate(SURVEY = "MEDITS", AREA = paste("GSA", AREA, sep="")) %>%
+  # HAUL ID variable added
+  unite("HAUL_ID",SURVEY,AREA,YEAR,HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Replace NA in GENUS and SPECIES by ABSENCE
+  mutate(GENUS = ifelse(is.na(GENUS),"ABSENCE",GENUS)) %>%
+  mutate(SPECIES = ifelse(GENUS == "ABSENCE","ABSENCE",SPECIES)) %>%
+  mutate(TOTAL_NUMBER_IN_HAUL = ifelse(is.na(TOTAL_NUMBER_IN_HAUL), 0, TOTAL_NUMBER_IN_HAUL)) %>% 
+  mutate(TOTAL_WEIGHT_IN_HAUL = ifelse(is.na(TOTAL_WEIGHT_IN_HAUL), 0, TOTAL_WEIGHT_IN_HAUL)) %>% 
+  # Filter haul no validated
+  filter(VALIDITY == "V")
+  
+  return(G_clean)
+  
+}
+```
+
+## Apply fncols and cols_interest to multiple dataframe
+
+```{r}
+
+adjust_function <- function(list_DF,y= Cols_interest){
+DF_final <- NULL
+for (i in 1 : length (list_DF)){
+  
+  var <- as.data.frame(list_DF[i])
+  G_temp <- fncols(var,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))%>%
+  clean_class()
+  G_temp <- as.data.frame(G_temp)
+  assign(x = paste0("df_",i),value = G_temp)
+  DF_final<-rbind(DF_final,G_temp)
+  
+  }
+return(DF_final)
+}
+```
+
+# Medits Data
+
+Each GSA is treated separately according to certain specificity
+TA dataset : metadata
+TB dataset : biologicals data from the hauls 
+
+## GSA 1-2 
+
+```{r}
+
+# Load the data
+G1_2_TA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_1-2/TA_G1-2_2007-2019.csv"), dec = ",", sep = ";")
+G1_2_TB <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_1-2/TB_G1-2_VME_2007-2019.csv"), dec = ",", sep = ";")
+
+# Join TA and TB keeping all rows in TA
+G1_2 <- left_join(G1_2_TA, G1_2_TB, by = c("COUNTRY", "AREA","YEAR","MONTH", "DAY","HAUL_NUMBER")) %>% 
+  # SURVEY and AREA variable added
+  mutate(SURVEY = "MEDITS", AREA = paste("GSA", AREA, sep="")) %>%
+  # HAUL ID variable added
+  unite("HAUL_ID",SURVEY,AREA,YEAR,HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Replace NA in GENUS and SPECIES by ABSENCE
+  mutate(GENUS = ifelse(is.na(GENUS),"ABSENCE",GENUS), SPECIES = ifelse(is.na(SPECIES),"ABSENCE",SPECIES)) %>%
+  mutate(TOTAL_NUMBER_IN_HAUL = ifelse(is.na(TOTAL_NUMBER_IN_HAUL), 0, TOTAL_NUMBER_IN_HAUL)) %>% 
+  mutate(TOTAL_WEIGHT_IN_HAUL = ifelse(is.na(TOTAL_WEIGHT_IN_HAUL), 0, TOTAL_WEIGHT_IN_HAUL)) %>% 
+  # Filter haul no validated
+  filter(VALIDITY == "V")
+  
+# Keep only columns of interest 
+G1_2 <- fncols(G1_2,Cols_interest) %>%
+  dplyr::select(all_of(Cols_interest))
+  #filter( DISTANCE > 6000)
+
+```
+
+## GSA 5
+
+```{r}
+# Load the data 
+G5_TA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_5/TA_G5_2012-2019.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename (HAULING_LATITUDE = HAUL_NUMBERING_LATITUDE, HAULING_LONGITUDE = HAUL_NUMBERING_LONGITUDE, HAULING_DEPTH = HAUL_NUMBERING_DEPTH)
+
+G5_TB <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_5/TB_G5_VME_2012-2019.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename (TOTAL_WEIGHT_IN_HAUL = TOTAL_WEIGHT_IN_THE_HAUL, TOTAL_NUMBER_IN_HAUL = TOTAL_NUMBER_IN_THE_HAUL)
+
+# Join and format TB and TA tables
+G5 <- clarity(G5_TA, G5_TB)
+  
+# Adjust the columns 
+G5 <- fncols(G5,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+
+G5_outlayers <- G5 %>% 
+get_dupes(HAUL_ID,SHOOTING_LONGITUDE,SHOOTING_LATITUDE,GENUS,SPECIES) 
+  #dplyr :: select(HAUL_ID, AREA, SHOOTING_LATITUDE, SHOOTING_LONGITUDE, HAULING_LATITUDE, HAULING_LONGITUDE, everything())
+
+```
+
+## GSA 6 
+We use the translated version of the spanish one. In particular, coordinates in the TA were specified for 5 steps of the haul trait instead of the 2 usually specified (SHOOTING and HAULING). The inicio (start of the haul) and the virado (end of the haul) were kept to compute midpoints. 
+
+Peut être faire une liste de variable d'intérêt après calcul, et utiliser celle là pour GSA17 et GSA6
+
+```{r}
+# Load the data
+G6_TA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_6/TA_G6.csv"), dec = ",", sep = ";")
+G6_TB <- read_excel (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_6/TB_G6_VME.xlsx"))
+
+# Prepare the data
+G6_TA <- G6_TA %>%
+  #Fix Haul Number
+  mutate(HAUL_NUMBER = as.numeric(substr(G6_TA$HAUL_NUMBER,2,1000))) %>%
+  #Fix Date
+  separate(DATE,c(NA,NA,"YEAR"), remove = F) %>%
+  mutate(YEAR = as.double(paste0("20", as.character(YEAR,sep ="")))) %>%
+  #Fix Distance and Wing_opening
+  mutate(DISTANCE = as.numeric(DISTANCE) * 1000) %>%
+  mutate(WING_OPENING = as.numeric(WING_OPENING) * 10) %>%
+  #Fix Validity
+  dplyr :: rename(VALIDITY = VALID) %>% mutate (VALIDITY = "V") 
+
+# Remove Hauls with no TB 
+G6_TB <- filter(G6_TB, YEAR > 2004)
+
+# Join TB and TA tables
+G6 <- left_join(G6_TA, G6_TB, by = c("AREA","YEAR","HAUL_NUMBER")) %>% 
+  # SURVEY and AREA variable added
+  mutate(SURVEY = "MEDITS", AREA = paste("GSA", AREA, sep="")) %>%
+  # HAUL ID variable added
+  unite("HAUL_ID",SURVEY,AREA,YEAR,HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Replace NA in GENUS and SPECIES by ABSENCE
+  mutate(GENUS = ifelse(is.na(GENUS),"ABSENCE",GENUS), SPECIES = ifelse(is.na(SPECIES),"ABSENCE",SPECIES)) %>%
+  mutate(TOTAL_NUMBER_IN_HAUL = ifelse(is.na(TOTAL_NUMBER_IN_HAUL), 0, TOTAL_NUMBER_IN_HAUL)) %>% 
+  mutate(TOTAL_WEIGHT_IN_HAUL = ifelse(is.na(TOTAL_WEIGHT_IN_HAUL), 0, TOTAL_WEIGHT_IN_HAUL)) %>% 
+  # Filter haul no validated
+  filter(VALIDITY == "V")
+
+# Adjust the columns 
+G6 <- fncols(G6,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+  #get_dupes(HAUL_ID,SHOOTING_LONGITUDE,SHOOTING_LATITUDE,GENUS,SPECIES)
+
+# # Coordinates conversion : They are already in decimal degrees, midpoints are calculated
+G6$LON <- ((as.numeric(G6$SHOOTING_LONGITUDE) + as.numeric(G6$HAULING_LONGITUDE))/2)
+G6$LAT <- ((as.numeric(G6$SHOOTING_LATITUDE) + as.numeric(G6$HAULING_LATITUDE))/2)
+
+G6_outlayer <- G6 %>%  
+  filter(DISTANCE >= 10000) 
+
+```
+
+## GSA 7-8
+
+```{r}
+# Load the data 
+G7_8_TA <- read.csv(here::here("Data/Raw_data/Raw_records/MEDITS/GSA_7-8/TA_G7-8_ALL_2012-2021.csv"), dec = ",", sep = ";")
+G7_8_TB <- read.csv(here::here("Data/Raw_data/Raw_records/MEDITS/GSA_7-8/TB_G7-8_ALL_2012-2021.csv"), dec = ",", sep = ";")
+
+#Join the table 
+G7_8 <- left_join(G7_8_TA,G7_8_TB, by = c("code_trait","Campagne"))
+
+# Prepare the data 
+G7_8 <- G7_8 %>%
+  # Rename columns
+  dplyr :: rename(SURVEY = Campagne, YEAR = Year,  AREA = strate, HAUL_NUMBER = NOSTA,TOTAL_NUMBER_IN_HAUL = NombreDansLeTrait, 
+         TOTAL_WEIGHT_IN_HAUL = PoidsTotalDansLeTrait,VALIDITY = valide, LON = Lon, LAT = Lat, SWEPT_AREA = surfacebalayee) %>%
+  # Fix Genus and Species
+  separate(C_VALIDE, c("GENUS", "SPECIES"), sep = 4) %>% mutate(SPECIES = na_if(SPECIES,"")) %>%
+  # Fix Area
+  mutate(AREA = str_replace_all(AREA, c("GSA07"), c("GSA7"))) %>%
+  mutate(AREA = str_replace_all(AREA, c("GSA08"), c("GSA8"))) %>%
+  # HAUL ID variable added
+  unite("HAUL_ID",SURVEY,AREA,YEAR,HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Filter haul no validated
+  filter(VALIDITY == "V") %>%
+  # Fix Total Number in haul : -1 means the species in present but no denumbered so we transform it in NA
+  mutate(TOTAL_NUMBER_IN_HAUL = as.character(TOTAL_NUMBER_IN_HAUL)) %>%
+  mutate(TOTAL_NUMBER_IN_HAUL = ifelse(TOTAL_NUMBER_IN_HAUL == -1, NA_character_,TOTAL_NUMBER_IN_HAUL)) %>%
+  # Fix GENUS name 
+  mutate(GENUS = ifelse (L_VALIDE == "Leptometra", "LEPR", GENUS)) %>%
+  mutate(SPECIES = ifelse (L_VALIDE == "Leptometra", "PHA", SPECIES)) %>% 
+  # Fix DEPTH
+  dplyr :: rename (DEPTH = depth)
+
+# Adjust the columns 
+G7_8 <- fncols(G7_8,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+  #get_dupes(HAUL_ID,SHOOTING_LONGITUDE,SHOOTING_LATITUDE,GENUS,SPECIES) %>%
+  #dplyr :: select(HAUL_ID, AREA, LON,LAT, GENUS, SPECIES,TOTAL_NUMBER_IN_HAUL, TOTAL_WEIGHT_IN_HAUL,SWEPT_AREA, everything())
+
+```
+
+## GSA 9 
+
+```{r}
+# Load the data 
+G9_TA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_9/TA_G9_2005-2018.csv"), dec = ",", sep = ";") %>%
+  mutate(AREA = as.character(AREA))
+  
+G9_TB <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_9/TB_G9_VME_2005-2018.csv"), dec = ",", sep = ";") %>%
+  mutate(AREA = "9")
+
+# Join TA and TB tables
+G9 <- clarity(G9_TA, G9_TB)
+
+# Adjust the columns 
+G9 <- fncols(G9,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+```
+
+## GSA 10
+
+```{r}
+# Load the data 
+
+G10_FUNIQUA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_FUNIQUA_2017-2021.csv"), dec = ",", sep = ";")
+G10_ISIDELO <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_ISIDELO_2017-2021.csv"), dec = ",", sep = ";")
+G10_LEPRPHA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_LEPRPHA_2017-2021.csv"), dec = ",", sep = ";")
+G10_NEOPCOC <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_NEOPCOC_2017-2021.csv"), dec = ",", sep = ";")
+G10_PENNPHO <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_PENNPHO_2017-2021.csv"), dec = ",", sep = ";")
+G10_PENNRUB <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_PENNRUB_2017-2021.csv"), dec = ",", sep = ";")
+G10_PTEDSPI <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_10/TA-TB_G10_PTEDSPI_2017-2021.csv"), dec = ",", sep = ";")
+
+
+# Preparation of the data 
+
+G10 <- bind_rows(G10_FUNIQUA, G10_ISIDELO,G10_LEPRPHA,G10_NEOPCOC,G10_PENNPHO,G10_PENNRUB,G10_PTEDSPI) %>%
+  # Fix Survey and Year
+  mutate(Survey = ifelse(Survey == "MEDITS_2021", "MEDITS 2021", Survey)) %>%
+  separate(Survey, c("SURVEY","YEAR"), sep=" ") %>%
+  # Fix GSA and Haul number
+  mutate(AREA = "GSA10") %>% dplyr :: rename(HAUL_NUMBER = Haul) %>%
+  # HAUL ID variable added
+  unite("HAUL_ID",SURVEY,AREA,YEAR,HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Fix Genus and Species 
+  mutate(Label = ifelse(Label == "Alcyonium palmatum","ALCYPAL", Label),
+         Label = ifelse(Label == "Caryophyllia smithii","CARYSMI", Label),
+         Label = ifelse(Label == "Funiculina quadrangularis","FUNIQUA", Label),
+         Label = ifelse(Label == "Gryphus vitreus","GRYPVIT", Label),
+         Label = ifelse(Label == "Isidella elongata","ISIDELO", Label),
+         Label = ifelse(Label == "Leptometra phalangium","LEPRPHA", Label),
+         Label = ifelse(Label == "Neopycnodonte cochlear","NEOPCOC", Label),
+         Label = ifelse(Label == "Pennatula phosphorea","PENNPHO", Label),
+         Label = ifelse(Label == "Pennatula rubra","PENNRUB", Label),
+         Label = ifelse(Label == "Pteroeides spinosum","PTEDSPI", Label),
+         Label = ifelse(Label == "Rhizaxinella pyrifera","RHIZPYR", Label),
+         Label = ifelse(Label == "Suberites domuncula","SUBEDOM", Label)) %>%
+  separate(Label,c("GENUS","SPECIES"),sep = 4) %>%
+  # Fix longitude et latitude
+  dplyr :: rename(LON = Longitude, LAT=Latitude) %>%
+  # Fix N/KM2
+  dplyr :: rename(TOTAL_NUMBER_IN_HAUL = Total.Number) %>% 
+  dplyr :: rename(TOTAL_WEIGHT_IN_HAUL = Total.Weight..g.) %>% 
+  # Fix depth 
+  dplyr :: rename(DEPTH = Depth)
+
+# Adjust the columns
+G10 <- fncols(G10,Cols_interest) %>%
+ dplyr :: select(all_of(Cols_interest))
+```
+
+
+## GSA 11 
+Cannot be used because, no data on species so we cannot distinguished between true absence or just missing records 
+Different TA depending of the year. Preliminary transformation are necessary to bind the TA. 
+
+```{r}
+
+# Load the TA data 
+
+G11_TA_2012_2017 <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_11/TA_G11_2012-2017.csv"), dec = ",", sep = ";") %>%
+  dplyr :: select(all_of(Cols_interest_TA)) %>%
+  mutate(DISTANCE = as.numeric(DISTANCE)) %>%
+  mutate(WING_OPENING = as.numeric(WING_OPENING))
+
+G11_TA_2018 <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_11/TA_G11_2018.csv"), dec = ",", sep = ";") %>%
+  dplyr :: select(all_of(Cols_interest_TA)) %>%
+  mutate(SHOOTING_LONGITUDE = as.character(SHOOTING_LONGITUDE)) %>%
+  mutate(SHOOTING_LATITUDE = as.character(SHOOTING_LATITUDE)) %>%
+  mutate(HAULING_LONGITUDE = as.character(HAULING_LONGITUDE)) %>%
+  mutate(HAULING_LATITUDE = as.character(HAULING_LATITUDE)) %>%
+  mutate(DISTANCE = as.numeric(DISTANCE)) %>%
+  mutate(WING_OPENING = as.numeric(WING_OPENING))
+  
+
+G11_TA_2019 <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_11/TA_G11_2019.csv"), dec = ",", sep = ";") %>%
+  dplyr :: select(all_of(Cols_interest_TA)) %>%
+  mutate(SHOOTING_LONGITUDE = as.character(SHOOTING_LONGITUDE)) %>%
+  mutate(SHOOTING_LATITUDE = as.character(SHOOTING_LATITUDE)) %>%
+  mutate(HAULING_LONGITUDE = as.character(HAULING_LONGITUDE)) %>%
+  mutate(HAULING_LATITUDE = as.character(HAULING_LATITUDE)) %>%
+  mutate(DISTANCE = as.numeric(DISTANCE)) %>%
+  mutate(WING_OPENING = as.numeric(WING_OPENING))
+
+# Delete an extra "7" in Hauling longitude for haul number 68
+G11_TA_2019 <- G11_TA_2019 %>% mutate(HAULING_LONGITUDE = ifelse(HAUL_NUMBER == 68, str_remove(G11_TA_2019$HAULING_LONGITUDE, "7"), HAULING_LONGITUDE))
+
+G11_TA <- bind_rows(G11_TA_2012_2017, G11_TA_2018, G11_TA_2019)
+
+# Load the TB data
+
+G11_TB_isi <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_11/TB_G11_ISIDELO.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename (TOTAL_WEIGHT_IN_HAUL = TOTAL_WEIGHT_IN_THE_HAUL,TOTAL_NUMBER_IN_HAUL = TOTAL_NUMBER_IN_THE_HAUL)
+
+G11_TB_funi <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_11/TB_G11_FUNIQUA.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename (NB_OF_FEMALES = NUMBER_OF_FEMALES, NB_OF_MALES = NUMBER_OF_MALES, NB_OF_UNDETERMINED =  NUMBER_OF_UNDETERMINED)
+
+G11_TB <- bind_rows(G11_TB_isi,G11_TB_funi) 
+
+
+# Join TA and TB 
+G11 <- clarity(G11_TA,G11_TB)
+
+# Adjust the columns
+G11 <- fncols(G11,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) 
+
+  
+```
+
+## GSA 16
+
+```{r}
+# Load the data 
+G16_TA <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_16/TA_G16_2004_2007-2019.csv"), dec = ",", sep = ";")
+G16_TB <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_16/TB_G16_VME_2004_2007-2019.csv"), dec = ",", sep = ";")
+
+# Prepare the data 
+G16_TB <- G16_TB %>%
+  dplyr :: rename(
+    TYPE_OF_FILE = TYPENR,
+    COUNTRY = PAYS,
+    AREA = GSA,VESSEL = BATEAU,
+    YEAR = AN,
+    HAUL_NUMBER = NOTRAI,
+    CODEND_CLOSING = FERCHA,
+    PART_OF_THE_CODEND = PARTIT,
+    FAUNISTIC_CATEGORY = CATFAU,
+    GENUS = GENRE,
+    SPECIES = ESP,
+    NAME_OF_THE_REFERENCE_LIST = LIREF,
+    TOTAL_WEIGHT_IN_HAUL = PTOT,
+    TOTAL_NUMBER_IN_HAUL = NBTOT,
+    NB_OF_FEMALES = NBFEM,
+    NB_OF_MALES = NBMAL,
+    NB_OF_UNDETERMINED = NBIND)
+
+# Join TA and TB tables 
+G16 <- clarity(G16_TA,G16_TB)
+
+# Adjust the columns 
+G16 <- fncols(G16,Cols_interest) %>%
+ dplyr :: select(all_of(Cols_interest)) 
+```
+
+## GSA 17
+Manque la distance donc pas de calcul possible de SWEPT AREA
+
+```{r}
+# Load the data 
+G17 <- read.csv (here::here("Data/Raw_data/Raw_records/MEDITS/GSA_17/TA_TB_G17_VME_2015_2021.csv"), dec = ",", sep = ";")
+
+#Prepare the data 
+G17 <- G17 %>%
+  # Fix Survey, year
+  separate(Survey, c("SURVEY","YEAR"),sep = 6) %>% 
+  # Fix Area 
+  rename(AREA = GSA) %>% mutate(AREA = "GSA17") %>% 
+  # Fix species  
+  separate(SpeciesCode, c("GENUS","SPECIES"), sep = 4) %>%
+  # Haul id variable added
+  unite("HAUL_ID", SURVEY, AREA, YEAR, Station, sep = "_", remove = F) %>%
+  # Fix longitude and latitude variable 
+  dplyr :: rename(LON = Lon.dd., LAT = Lat.dd.) %>%
+  # Fix other variable name
+  dplyr :: rename (SWEPT_AREA = SweptArea_km2, N_KM2 = AbunIndex_N_km2) %>% 
+  mutate(G_KM2 = BiomIndex_kg_km2 * 10^3) %>%  # Conversion en gramme/KM2
+  # Fix Depth 
+  dplyr :: rename(DEPTH = Depth_m)
+
+# Adjust the columns 
+G17 <- fncols(G17,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) 
+```
+
+
+## GSA 18 
+Cannot be used because, no data on species so we cannot distinguished between true absence or just missing records 
+On a que la TA jusqu'à 2018
+On ne orend pas les Pennatules pour lesquelles on a une TB qui va jusqu'à 2021, on n'a pas la TA complete
+
+```{r}
+# Load TA data
+G18_TA <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_18/TA_G18_2012-2018.csv"), dec = ",", sep = ";")
+
+G18_TB_FUNIQUA <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_18/TB_G18_FUNIQUA.csv"), dec = ",", sep = ";")
+G18_TB_ISIDELLO <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_18/TB_G18_ISIDELO.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename(AREA = GSA, TOTAL_NUMBER_IN_HAUL = TOTAL_NUMBER_IN_THE_HAUL, TOTAL_WEIGHT_IN_HAUL = TOTAL_WEIGHT_IN_THE_HAUL) %>%
+  filter(GENUS != -1) %>%
+  dplyr :: select(!c(N_h, N_km2, kg_h, kg_km2))
+
+G18_TB <- bind_rows(G18_TB_FUNIQUA, G18_TB_ISIDELLO)
+
+# Join TB and TA tables
+G18 <- clarity(G18_TA, G18_TB)
+
+# Adjust the columns
+G18 <- fncols(G18,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+```
+
+## GSA 19
+
+```{r}
+# Load the data
+G19_TA <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_19/TA_G19_ISIDELO_2012-2017.csv"), dec = ",", sep = ";")
+G19_TB <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_19/TB_G19_ISIDELO_2012-2017.csv"), dec = ",", sep = ";") %>%
+  dplyr :: rename (TOTAL_WEIGHT_IN_HAUL = TOTAL_WEIGHT_IN_THE_HAUL, TOTAL_NUMBER_IN_HAUL = TOTAL_NUMBER_IN_THE_HAUL)
+  
+
+# Join TB and TA tables
+
+G19 <- clarity(G19_TA, G19_TB)
+
+# Adjust the columns
+G19 <- fncols(G19,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+
+```
+
+## GSA 25 
+Pas de données sur aucune espèce, GENUS = NOTISID, pour dire que l'on n'a pas d'ISIDELLA et qu'on les considère en absence 
+
+```{r}
+# Load the data
+G25 <- read.csv (here::here ("Data/Raw_data/Raw_records/MEDITS/GSA_25/TA_G25.csv"), dec = ",", sep = ";") %>%
+  mutate (AREA = "25")
+
+# Prepare the data  
+G25 <- G25 %>%
+  # Survey and Area variable added
+  mutate(SURVEY = "MEDITS", AREA = paste("GSA", AREA, sep="")) %>%
+  # Haul id variable added
+  unite("HAUL_ID", SURVEY, AREA, YEAR, HAUL_NUMBER, sep = "_", remove = F) %>%
+  # Genus and species variable added 
+  mutate(GENUS = "ABSENCE" , SPECIES = "ABSENCE")
+
+# Adjust the columns
+G25 <- fncols(G25,Cols_interest) %>%
+ dplyr :: select(all_of(Cols_interest))
+```
+
+
+## Binding Medits files 
+
+Binding the Medits files with DD latitudes to create a first file where coordinates are in DDM
+
+```{r}
+# Clean class of GSA with no LAT and LON calculated
+
+G_list <- list(G1_2, G5, G6, G7_8, G9, G10, G11, G16, G17, G18, G19, G25) %>%
+  lapply(clean_class)
+
+Medits_bind <- bind_rows (G_list) %>%
+  mutate(SPECIES = ifelse(GENUS != "ABSENCE" & is.na(SPECIES),"sp",SPECIES)) %>%
+  # Replace "," by "." 
+  apply(2, function(x) str_replace(x,",",".")) %>% 
+  as.data.frame() %>% clean_class() %>%
+  # Filter GENUS with no name
+  filter(GENUS != "") %>% 
+  # Calculation of depth 
+  mutate(DEPTH = if_else(is.na(DEPTH), (SHOOTING_DEPTH + HAULING_DEPTH) / 2, DEPTH))
+
+# Calculation of Longitude and Latitude 
+
+## For GSA with coordinate in decimal degree
+
+Medits_bind_coord_miss <- filter(Medits_bind, is.na(LON) & is.na(LAT) & !is.na(DISTANCE)) %>%
+  mutate_at(c("SHOOTING_LATITUDE","SHOOTING_LONGITUDE","HAULING_LATITUDE","HAULING_LONGITUDE"), as.numeric)
+# Add a decimal part in each cell
+Medits_bind_coord_miss[,"SHOOTING_LATITUDE"]  <- format(Medits_bind_coord_miss[,"SHOOTING_LATITUDE"] , nsmall = 2)
+Medits_bind_coord_miss[,"SHOOTING_LONGITUDE"] <- format(Medits_bind_coord_miss[,"SHOOTING_LONGITUDE"], nsmall = 2)
+Medits_bind_coord_miss[,"HAULING_LONGITUDE"]  <- format(Medits_bind_coord_miss[,"HAULING_LONGITUDE"] , nsmall = 2)
+Medits_bind_coord_miss[,"HAULING_LATITUDE"]   <- format(Medits_bind_coord_miss[,"HAULING_LATITUDE"]  , nsmall = 2)
+# Delete white space, clean class and apply DD_full function to convert 
+Medits_bind_coord_miss <- apply( Medits_bind_coord_miss, 2, function(x) gsub("\\s+", "", x)) %>% as.data.frame() %>%
+  clean_class() %>%
+  DD_full()
+
+## GSA with LON and LAT already calculated 
+
+Medits_bind_coord_no_miss <- filter(Medits_bind, !is.na(LON) & !is.na(LAT) & AREA != "GSA6")
+
+## GSA 6
+
+Medits_G6 <- filter(Medits_bind, AREA == "GSA6")
+
+## Binding 
+
+Medits <- bind_rows(
+Medits_bind_coord_miss,Medits_bind_coord_no_miss, Medits_G6)
+
+# Calculation of Swept Area 
+
+Medits <- Medits %>% 
+  mutate(SWEPT_AREA = ifelse(is.na(SWEPT_AREA), (DISTANCE * (WING_OPENING/10)) * 10^(-6), SWEPT_AREA)) %>% 
+  mutate(N_KM2 = ifelse (is.na(N_KM2), TOTAL_NUMBER_IN_HAUL / SWEPT_AREA, N_KM2)) %>%
+  mutate(G_KM2 = ifelse (is.na(G_KM2), TOTAL_WEIGHT_IN_HAUL / SWEPT_AREA, G_KM2)) %>% 
+  mutate(SOURCE = "MEDITS")
+```
+
+
+# Leptometra Phalangium
+
+## OBIS data 
+
+```{r}
+# Load the data 
+
+OBIS_LEPR <- read.csv (here::here ("Data/Raw_data/Raw_records/OBIS/OBIS_LEPRPHA.csv"), dec = ",", sep = ",") %>% 
+  # Filter data with to hight coordinate uncertainty
+  filter(as.numeric(coordinateuncertaintyinmeters)/1000 <= 100 | is.na(coordinateuncertaintyinmeters)) 
+
+# Preparation of the data 
+OBIS_LEPR <- OBIS_LEPR %>% 
+  dplyr :: select(decimallongitude, decimallatitude, date_year, scientificname) %>%
+  rownames_to_column("ID") %>% 
+  mutate(SOURCE = "OBIS") %>% 
+  mutate(date_year = ifelse(is.na(date_year), "no_date", date_year)) %>% 
+  unite("HAUL_ID", SOURCE, date_year,ID, sep = "_", remove = F) %>%
+  dplyr :: rename(LON = decimallongitude,LAT = decimallatitude) %>%
+  mutate(scientificname = "LEPRPHA") %>% 
+  separate(scientificname, c("GENUS", "SPECIES"), sep = 4)
+
+# Adjust the columns
+OBIS_LEPR <- fncols(OBIS_LEPR,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+
+```
+
+## GBIF data 
+
+```{r}
+# Load and clean the data 
+GBIF_LEPR <- read.csv (here::here ("Data/Raw_data/Raw_records/GBIF/GBIF_LEPRPHA.csv"), dec = ",", sep = ";") %>%
+  mutate_all(na_if, "") %>% 
+  # Filter data with to hight coordinate uncertainty
+  filter(as.numeric(coordinateUncertaintyInMeters)/1000 <= 100 | is.na(coordinateUncertaintyInMeters))
+
+# Preparation of the data 
+GBIF_LEPR <- GBIF_LEPR %>% 
+  dplyr :: select(decimalLongitude, decimalLatitude, species, year) %>%
+  rownames_to_column("ID") %>% 
+  mutate(SOURCE = "GBIF") %>% 
+  mutate(year = ifelse(is.na(year),"no_date", year)) %>% 
+  unite("HAUL_ID", SOURCE, year, ID, sep = "_", remove = F) %>%
+  dplyr :: rename(LON = decimalLongitude,LAT = decimalLatitude) %>%
+  mutate(species = "LEPRPHA") %>% 
+  separate(species, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate_at(c("LON","LAT"), as.numeric)
+
+# Adjust the columns
+GBIF_LEPR <- fncols(GBIF_LEPR, Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+
+```
+
+## ROV data
+
+Data from spain 
+
+```{r}
+# Load the data
+ROV_LEPR <- read.csv (here::here ("Data/Raw_data/Raw_records/Cap_de_Creus/Cap_de_Creus_LEPR.csv"), dec = ",", sep = ";")
+
+ROV_LEPR <- ROV_LEPR %>% 
+  mutate(HAUL_ID = paste0("ROV_data_", row.names(ROV_LEPR))) %>% 
+  mutate(SOURCE = "ROV") %>% 
+  mutate(GENUS = "LEPR", SPECIES = "PHA")
+
+# Adjust the columns
+ROV_LEPR <- fncols(ROV_LEPR, Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+
+```
+
+
+## GSA22 multi source
+Abundance : disponible mais attention on ne peut pas la convertir en N/km2 
+
+```{r}
+# Load the data
+GSA22_LEPR <- read.csv (here::here ("Data/Raw_data/Raw_records/GSA_22_multi_source/PENN_LEPR_GSA_22.csv"), dec = ",", sep = ";")
+
+GSA22_LEPR <- GSA22_LEPR %>% 
+  filter(Taxon == "Leptometra_phalangium") %>% 
+  mutate(ID = c(1:6)) %>% 
+  mutate(HAUL_ID = paste(SOURCE,AREA,Year,ID, sep="_")) %>% 
+  mutate(GENUS = "LEPR", SPECIES = "PHA") %>% 
+  dplyr::rename(LON = Longitude_DD, LAT = Latitude_DD) %>% 
+  mutate(DEPTH = (Min_depth_m + Max_depth_m)/2)
+
+# Adjust the columns
+GSA22_LEPR <- fncols(GSA22_LEPR, Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+
+```
+
+## Bind
+
+```{r}
+Genus_interest   <- "LEPR"
+Species_interest <- "PHA"
+
+BIND_LEPR <- bind_rows(Medits, OBIS_LEPR, GBIF_LEPR, ROV_LEPR, GSA22_LEPR) 
+
+# Presence extraction
+LEPR_pre <- filter(BIND_LEPR, GENUS == Genus_interest & SPECIES == Species_interest) %>%
+  mutate(PRESENCE = 1) %>% 
+  distinct_at(vars(LON, LAT), .keep_all =  T)
+
+# Absence extraction 
+LEPR_abs <- filter(BIND_LEPR, !AREA %in% c("GSA11", "GSA18", "GSA19", "GSA25")) %>% 
+  # Absence only in AREA for which we have presence data
+  filter(GENUS != Genus_interest & SPECIES != Species_interest) %>%
+  # ABSENCE or all GENUS different of LEPR
+  distinct_at(vars(LON, LAT), .keep_all =  T) %>% 
+  # Delete double records, in MEDITS, for the same haul, several species different of LEPR
+  anti_join (LEPR_pre, by = "HAUL_ID") %>% 
+  # Avoid duplicate with presence records 
+  mutate (PRESENCE = 0)
+
+# Bind 
+LEPR <- bind_rows(LEPR_pre, LEPR_abs)
+
+# Some points with inconsistent LON and LAT are removed 
+
+LEPR <- LEPR  %>% 
+  filter(!HAUL_ID %in%
+           c(
+             #Absence data
+             "MEDITS_GSA17_2016_168",
+             "MEDITS_GSA17_2016_159",
+             "MEDITS_GSA17_2016_154",
+             "MEDITS_GSA17_2016_49",
+             "MEDITS_GSA17_2019_95",
+             "MEDITS_GSA17_2018_94",
+             "MEDITS_GSA17_2016_72",
+             "MEDITS_GSA17_2015_6",
+             "MEDITS_GSA17_2016_7",
+             "MEDITS_GSA17_2016_146",
+             # Presence data
+             "GBIF_no_date_9", 
+             "GBIF_1960_4",
+             "GBIF_no_date_11"))
+
+LEPR_sf <- st_as_sf(LEPR, coords = c("LON","LAT"), crs = 4326)
+
+mapView(LEPR_sf["SOURCE"])
+
+write.csv(LEPR, file = here::here("Data/Raw_data/Species/LEPR.csv"))
+```
+
+## Map
+
+```{r}
+# Map elements
+coastline_med <- st_read(here::here("Data/Raw_data/Country/land-polygons/coastline_med.shp"))
+sf_use_s2(FALSE)
+xmin <- -6
+xmax <- 37
+ymin <- 30
+ymax <- 46
+study_extent <- ext(xmin,xmax,ymin,ymax)
+
+bathy_med <- rast(here::here("Data/Raw_data/Environment/raster_resampling/Raster_res_5km/bathy_atl_med.tif")) %>% 
+  crop(study_extent) %>% 
+  clamp(upper=0)
+#bathy_palette <- brewer.pal(n = 9, "Blues")[2:9]
+  
+
+# Sf conversion
+
+lepr_sf <- st_as_sf(LEPR,coords=c("LON","LAT"), crs = 4326)
+
+lepr_sf_pre <- lepr_sf %>% 
+  filter(PRESENCE == 1)
+
+lepr_sf_abs <- lepr_sf %>% 
+  filter(PRESENCE == 0)
+
+# Maps
+
+lepr_map_pre <- 
+  #tm_shape(coastline_med) + tm_polygons(col = "white") + 
+  tm_shape(bathy_med) + tm_raster(style = "cont", palette = "grey", title = "Bathymetry",legend.show = FALSE) +
+  tm_shape(lepr_sf_pre) + tm_symbols(col = "SOURCE", size = 0.3, border.col = "black", border.lwd = 0.5,  palette = c("springgreen1","indianred1","blue1","yellow1","orange"), title.col = "Source", legend.size.show = FALSE,
+  legend.col.show = FALSE) +
+  tm_graticules(labels.inside.frame = F, lines = F, labels.size = 0.9) +
+  tm_legend(outside = TRUE, outside.position = "right", legend.show = TRUE) +
+  tm_layout(main.title = expression("Presence records of" ~italic("Leptometra phalangium")), main.title.size = 1.3, saturation = 1.5, frame = T, inner.margins = 0, legend.text.size = 1, legend.title.size = 1.5) +
+  tm_add_legend('symbol', 
+	col = c("springgreen1","indianred1","blue1","yellow1","orange"),
+	border.col = "black",
+	size = 1,
+	labels = c("GBIF","MEDITS","OBIS","ROV","Trawl"),
+	title="Source")
+lepr_map_pre
+
+tmap_save(lepr_map_pre, "E:/PhD_2022_2023/Project/SDM/R/Output/Maps/lepr_map_pre.png", width = 10, height = 7)
+
+mapview(lepr_sf_pre["AREA"], col.region = rainbow(10), layer.name = "AREA")
+
+lf <- tmap_leaflet(lepr_map, popup.vars=c("LON","LAT"))
+lf
+
+lepr_map_abs <- 
+  # tm_shape(coastline_med) + tm_polygons(col = "snow2") + 
+  tm_shape(bathy_med) + tm_raster(style = "cont", palette = "grey", title = "Bathymetry",legend.show = FALSE ) +
+  tm_shape(lepr_sf_abs) + tm_symbols(col = "SOURCE", size = 0.2, border.col = "black", border.lwd = 0.5,  palette = "indianred1", title.col = "Source", legend.size.show = FALSE, legend.col.show = FALSE) +
+  tm_graticules(labels.inside.frame = F, lines = F, labels.size = 0.9) +
+  tm_legend(outside = TRUE, outside.position = "right", legend.show = TRUE) +
+  tm_layout(main.title = expression("Absence records of "~italic("Leptometra phalangium")), main.title.size = 1.3, saturation = 1.5, frame = T, inner.margins = 0, legend.text.size = 1, legend.title.size = 1.5) +
+  tm_add_legend('symbol', 
+	col = "indianred1",
+	border.col = "black",
+	size = 1,
+	labels = "MEDITS",
+	title="Source")
+lepr_map_abs
+
+tmap_save(lepr_map_abs, "E:/PhD_2022_2023/Project/SDM/R/Output/Maps/lepr_map_abs.png", width = 10, height = 7)
+
+lepr_map_abs_pre <- tmap_arrange(ncol = 2, nrow = 2, lepr_map_pre,legend, lepr_map_abs)
+lepr_map_abs_pre
+
+tmap_arrange(ncol = 1, nrow = 2, lepr_map_pre,lepr_map_abs)
+
+tmap_save(lepr_map_abs_pre, "E:/PhD_2022_2023/Project/SDM/R/Output/Maps/lepr_map_abs_pre.png", width = 12, height = 6)
+```
+
+
+## Distance : Trouver erreur 
+
+```{r}
+
+# GSA 6
+
+LEPR_distance_GSA6 <- LEPR %>% 
+  dplyr :: select(HAUL_ID,AREA, SHOOTING_LONGITUDE, SHOOTING_LATITUDE, HAULING_LONGITUDE, HAULING_LATITUDE, DISTANCE) %>% 
+  filter(AREA == "GSA6") %>% 
+  mutate_at(vars("SHOOTING_LONGITUDE", "SHOOTING_LATITUDE", "HAULING_LONGITUDE", "HAULING_LATITUDE"), as.numeric) %>% 
+  # Shooting Longitude
+  mutate(SHOOTING_LONGITUDE_DD_corr = SHOOTING_LONGITUDE * cos((SHOOTING_LATITUDE * pi)/180)) %>% 
+  # Hauling Longitude
+  mutate(HAULING_LONGITUDE_DD_corr = HAULING_LONGITUDE * cos((HAULING_LATITUDE * pi)/180)) %>% 
+  # Distance DD
+  mutate(Distance_DD = sqrt((SHOOTING_LATITUDE - HAULING_LATITUDE)^2 + (SHOOTING_LONGITUDE_DD_corr - HAULING_LONGITUDE_DD_corr)^2)) %>% 
+  # Distance mn 
+  mutate(Distance_mn = Distance_DD * 60) %>% 
+  # Distance m 
+  mutate(Distance_m = (Distance_mn  * 1852)) %>% 
+  # Difference
+  mutate(difference = Distance_m - DISTANCE) %>% 
+  filter(difference < 1000)
+
+
+# All GSA except GSA6
+
+LEPR_distance_GSA1_25 <-  LEPR %>% 
+  dplyr :: select(HAUL_ID,AREA, SHOOTING_LONGITUDE, SHOOTING_LATITUDE, HAULING_LONGITUDE, HAULING_LATITUDE, DISTANCE) %>% 
+  filter(AREA != "GSA6") %>% 
+  # Shooting latitude
+  mutate(SHOOTING_LATITUDE_int = as.numeric(substr(SHOOTING_LATITUDE, start = 1, stop = 2))) %>% 
+  mutate(SHOOTING_LATITUDE_dec = (as.numeric(substr(SHOOTING_LATITUDE, start = 3, stop = 30))/60)) %>% 
+  mutate(SHOOTING_LATITUDE_DD = SHOOTING_LATITUDE_int + SHOOTING_LATITUDE_dec) %>% 
+  # Hauling Latitude
+  mutate(HAULING_LATITUDE_int = as.numeric(substr(HAULING_LATITUDE, start = 1, stop = 2))) %>% 
+  mutate(HAULING_LATITUDE_dec = (as.numeric(substr(HAULING_LATITUDE, start = 3, stop = 30))/60)) %>% 
+  mutate(HAULING_LATITUDE_DD = HAULING_LATITUDE_int + HAULING_LATITUDE_dec) %>% 
+  # Shooting Longitude
+  mutate(SHOOTING_LONGITUDE_int = as.numeric(substr(SHOOTING_LONGITUDE, start = 1, stop = 1))) %>% 
+  mutate(SHOOTING_LONGITUDE_dec = (as.numeric(substr(SHOOTING_LONGITUDE, start = 2, stop = 30))/60)) %>% 
+  mutate(SHOOTING_LONGITUDE_DD = (SHOOTING_LONGITUDE_int + SHOOTING_LONGITUDE_dec)) %>% 
+  mutate(SHOOTING_LONGITUDE_DD_corr = SHOOTING_LONGITUDE_DD * cos((SHOOTING_LATITUDE_DD * pi)/180)) %>% 
+  # Hauling Longitude
+  mutate(HAULING_LONGITUDE_int = as.numeric(substr(HAULING_LONGITUDE, start = 1, stop = 1))) %>% 
+  mutate(HAULING_LONGITUDE_dec = (as.numeric(substr(HAULING_LONGITUDE, start = 2, stop = 30))/60)) %>% 
+  mutate(HAULING_LONGITUDE_DD = (HAULING_LONGITUDE_int + HAULING_LONGITUDE_dec)) %>% 
+  mutate(HAULING_LONGITUDE_DD_corr = HAULING_LONGITUDE_DD * cos((HAULING_LATITUDE_DD * pi)/180)) %>% 
+  # Distance DD
+  mutate(Distance_DD = sqrt((SHOOTING_LATITUDE_DD - HAULING_LATITUDE_DD)^2 + (SHOOTING_LONGITUDE_DD_corr - HAULING_LONGITUDE_DD_corr)^2)) %>% 
+  # Distance mn 
+  mutate(Distance_mn = Distance_DD * 60) %>% 
+  # Distance m 
+  mutate(Distance_m = (Distance_mn  * 1852)) %>% 
+  # Difference
+  mutate(difference = Distance_m - DISTANCE) %>% 
+  filter(difference > 100)
+
+```
+
+# Funiculina quadrangularis 
+
+## OBIS data
+
+We delete a lot of data according to uncertainty
+
+```{r}
+OBIS_FUNI <- read.csv (here::here ("Data/Raw_data/Raw_records/OBIS/OBIS_FUNIQUA.csv"), dec = ",", sep = ",") %>% 
+  # Filter data with to hight coordinate uncertainty
+  filter(as.numeric(coordinateuncertaintyinmeters)/1000 <= 100 | is.na(coordinateuncertaintyinmeters)) 
+
+# Preparation of the data 
+OBIS_FUNI <- OBIS_FUNI %>% 
+  dplyr :: select(decimallongitude, decimallatitude, date_year, scientificname) %>%
+  mutate(SOURCE = "OBIS") %>% 
+  rownames_to_column("ID") %>% 
+  mutate(date_year = ifelse(is.na(date_year), "no_date", date_year)) %>% 
+  unite("HAUL_ID", SOURCE, date_year,ID, sep = "_", remove = F) %>%
+  dplyr :: rename(LON = decimallongitude,LAT = decimallatitude) %>%
+  mutate(scientificname = "FUNIQUA") %>% 
+  separate(scientificname, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate(SOURCE = "OBIS")
+
+# Adjust the columns
+OBIS_FUNI <- fncols(OBIS_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+```
+
+## GBIF data
+
+Problème avec le fichier initial mais pas de points en plus intéressant
+
+```{r}
+# Load and clean the data 
+GBIF_FUNI <- read.csv (here::here ("Data/Raw_data/Raw_records/GBIF/TEST.csv"), sep = ";", dec = ".") %>% 
+  mutate_all(na_if, "") %>% 
+  # Filter data with to hight coordinate uncertainty
+  filter(as.numeric(coordinateUncertaintyInMeters)/1000 <= 100 | is.na(coordinateUncertaintyInMeters))
+
+# Preparation of the data 
+GBIF_FUNI <- GBIF_FUNI %>% 
+  dplyr :: select(decimalLongitude, decimalLatitude, species, year) %>%
+  rownames_to_column("ID") %>% 
+  mutate(SOURCE = "GBIF") %>% 
+  mutate(year = ifelse(is.na(year),"no_date", year)) %>% 
+  unite("HAUL_ID", SOURCE, year, ID, sep = "_", remove = F) %>%
+  dplyr :: rename(LON = decimalLongitude,LAT = decimalLatitude) %>%
+  mutate(species = "FUNIQUA") %>% 
+  separate(species, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate_at(c("LON","LAT"), as.numeric)
+
+# Adjust the columns
+GBIF_FUNI <- fncols(GBIF_FUNI, Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>%
+  clean_class()
+```
+
+## DATRAS data 
+
+Absence : toutes les données TA de DYFS pour la Belgique sont a considérée comme des absences 
+Sinon, seules les TA des campagnes_ship_year avec des présences de funiqua sont utilisées pour garder des absences
+
+```{r}
+
+# TA data
+BTS_74RY_TA <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/BTS_74RY_TA.csv"), dec = ",", sep = ",")
+BTS_VIII_35A8_TA <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/BTS_VIII_35A8_TA.csv"), dec = ",", sep = ",")
+DYFS_all_data_TA <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/DYFS_all_data_TA.csv"), dec = ",", sep = ",") %>% 
+  dplyr :: select(-SurveyIndexArea) %>% 
+  filter(Country=="BE") %>% 
+  # Year before 2000, error in lat and lon
+  filter(Year >= 2000)
+  
+NS_IBTS_74E9_TA <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/NS_IBTS_74E9_TA.csv"), dec = ",", sep = ",")
+
+FUNI_TA <- rbind(BTS_74RY_TA,BTS_VIII_35A8_TA,DYFS_all_data_TA,NS_IBTS_74E9_TA) %>% # HAUL ID variable added
+  unite("HAUL_ID",Survey,Gear,Ship,Year,HaulNo, sep = "_", remove = F) %>%
+  dplyr :: select(HAUL_ID, Survey,Gear,Ship,Year,HaulNo, ShootLat, ShootLong,HaulLat,HaulLong, Depth)
+  
+# TB data
+BTS_74RY_TB <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/BTS_74RY_TB.csv"), dec = ",", sep = ",") 
+BTS_VIII_35A8_TB <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/BTS_VIII_35A8_TB.csv"), dec = ",", sep = ",")
+
+NS_IBTS_74E9_TB <- read.csv (here::here("Data/Raw_data/Raw_records/DATRAS/FUNIQUA/NS_IBTS_74E9_TB.csv"), dec = ",", sep = ",")
+
+FUNI_TB <- rbind(BTS_74RY_TB,BTS_VIII_35A8_TB,NS_IBTS_74E9_TB)%>% unite("HAUL_ID",Survey,Gear,Ship,Year,HaulNo, sep = "_", remove = F) %>% 
+  filter(ScientificName_WoRMS %in% c("Funiculina quadrangularis", "Funiculina")) %>% 
+  dplyr :: select(HAUL_ID, Survey,Gear,Ship,Year,HaulNo,ScientificName_WoRMS)
+
+# Join between TA and TB 
+DATRAS_FUNI <- left_join(FUNI_TA,FUNI_TB) %>% 
+  # Clean species name 
+  mutate(ScientificName_WoRMS = case_when(
+    ScientificName_WoRMS == "Funiculina quadrangularis" ~ "FUNIQUA",
+    ScientificName_WoRMS == "Funiculina" ~ "FUNIQUA",
+    TRUE ~ "ABS_ABS")) %>% 
+  separate(ScientificName_WoRMS, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate(GENUS = case_when(
+    GENUS == "ABS_" ~ "ABSENCE",
+    TRUE ~ as.character(GENUS)),
+         SPECIES = case_when(
+    SPECIES == "ABS" ~ "ABSENCE",
+    TRUE ~ as.character(SPECIES))) %>% 
+  # Fix Longitude and Latitude
+  mutate(ShootLong = as.numeric(ShootLong),ShootLat = as.numeric(ShootLat),HaulLong = as.numeric(HaulLong), HaulLat = as.numeric(HaulLat)) %>% 
+  mutate(LON = (ShootLong + HaulLong)/2) %>% 
+  mutate(LAT = (ShootLat + HaulLat)/2) %>% 
+  # Fix Depth
+  dplyr :: rename(DEPTH = Depth) %>% 
+  # Fix Source
+  mutate(SOURCE = Survey)
+
+# Adjust the columns
+DATRAS_FUNI <- fncols(DATRAS_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest))
+
+```
+
+## EVHOE
+
+```{r}
+EVHOE_TA <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/EVHOE/TA_EVHOE.csv", dec = ",", sep = ";")
+
+EVHOE_TB <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/EVHOE/TB_EVHOE.csv", dec = ",", sep = ";")
+
+EVHOE_FUNI <- left_join(EVHOE_TA, EVHOE_TB) %>% 
+  unite("HAUL_ID",Campagne,Annee, Trait, sep = "_", remove = F) %>% 
+  mutate(SOURCE = Campagne) %>% 
+  dplyr :: rename(LON = Long, LAT = Lat, DEPTH = ProfMoy) %>% 
+  # Clean species name
+   mutate(Espece = case_when(
+    Espece == "Funiculina quadrangularis" ~ "FUNIQUA",
+    TRUE ~ "ABS_ABS")) %>% 
+  separate(Espece, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate(GENUS = case_when(
+    GENUS == "ABS_" ~ "ABSENCE",
+    TRUE ~ as.character(GENUS)),
+         SPECIES = case_when(
+    SPECIES == "ABS" ~ "ABSENCE",
+    TRUE ~ as.character(SPECIES))) %>% 
+  # N_KM2 
+  mutate(N_KM2 = as.numeric(Nombre)/as.numeric(SurfaceBalayee), G_KM2 = as.numeric(Poids)/as.numeric(SurfaceBalayee))
+
+EVHOE_FUNI <- fncols(EVHOE_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>% 
+  clean_class()
+
+```
+
+## SEANOE
+
+Très peu de taxon, pas de funiculina et que pour 2017 et 2018
+
+## MEDSEACAN
+
+On peut ajouter le Nbr par km mais pas Nbr par KM2 de dispo
+
+```{r}
+MEDSEACAN_FUNI <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/MEDSEACAN/FUNI_MEDSEACAN.csv", dec = ",", sep = ";") %>%
+  mutate(CRUISE = "ROV") %>% 
+  unite("HAUL_ID", CRUISE,FID, sep = "_", remove = F) %>% 
+  mutate(SOURCE = CRUISE) %>% 
+  dplyr :: rename(LON = LONGITUDE, LAT=LATITUDE,DEPTH = DEPTH_m) %>% 
+  # Clean species name 
+  mutate(SPECIES = case_when(
+    PRES_ABS == 1 ~ "FUNIQUA",
+    TRUE ~ "ABS_ABS")) %>% 
+  separate(SPECIES, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate(GENUS = case_when(
+    GENUS == "ABS_" ~ "ABSENCE",
+    TRUE ~ as.character(GENUS)),
+         SPECIES = case_when(
+    SPECIES == "ABS" ~ "ABSENCE",
+    TRUE ~ as.character(SPECIES)))
+
+MEDSEACAN_FUNI <- fncols(MEDSEACAN_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>% 
+  clean_class()
+```
+
+## CORSEACAN
+
+On peut ajouter le Nbr par km mais pas Nbr par KM2 de dispo
+
+```{r}
+CORSEACAN_FUNI <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/CORSEACAN/FUNI_CORSEACAN.csv", dec = ",", sep = ";") %>%
+  mutate(SOURCE = "ROV") %>% 
+  rownames_to_column("ID") %>% 
+  unite("HAUL_ID", SOURCE,ID, sep = "_", remove = F) %>% 
+  dplyr :: rename(LON = LONGITUDE, LAT=LATITUDE,DEPTH = DEPTH_m) %>% 
+  # Clean species name 
+  mutate(SPECIES = case_when(
+    PRES_ABS == 1 ~ "FUNIQUA",
+    TRUE ~ "ABS_ABS")) %>% 
+  separate(SPECIES, c("GENUS", "SPECIES"), sep = 4) %>% 
+  mutate(GENUS = case_when(
+    GENUS == "ABS_" ~ "ABSENCE",
+    TRUE ~ as.character(GENUS)),
+         SPECIES = case_when(
+    SPECIES == "ABS" ~ "ABSENCE",
+    TRUE ~ as.character(SPECIES)))
+
+CORSEACAN_FUNI <- fncols(CORSEACAN_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>% 
+  clean_class()
+```
+
+## LANCAM
+
+```{r}
+LANCAM_FUNI <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/North_Spain/Funiculina_quadrangularis.csv", sep = ";") %>% 
+  dplyr :: rename(HAUL_ID = Lancam, LON = Lon_m_C.x, LAT = Lat_m_C.x, N_KM2 = Density..Number.SqrKm., G_KM2 = Biomass..g.SqrKm., PRESENCE = pres) %>% 
+  mutate(SOURCE = "LANCAM") %>% 
+  mutate(GENUS = case_when(PRESENCE == 1 ~ "FUNI",
+                           TRUE ~ "ABSENCE")) %>% 
+  mutate(SPECIES = case_when(PRESENCE == 1 ~ "QUA",
+                           TRUE ~ "ABSENCE"))
+LANCAM_FUNI <- fncols(LANCAM_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>% 
+  clean_class() 
+```
+
+## GSA 20_22_23 Multi Source
+
+Ajout possible de G_KM2 et N_KM2
+
+```{r}
+GSA_20_22_23_FUNI <- read.csv("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Raw_records/GSA_20_22_23_multi_source/FUNI_GSA_20_22_23.csv", sep = ";") %>%
+  mutate(Gear_type = case_when(
+    Gear_type == "Video_Sled" ~ "ROV",
+    Gear_type == "Commercial_trawl" ~ "Trawl",
+    Gear_type == "Otter_trawl" ~ "Trawl",
+    Gear_type == "Otter_Trawl" ~ "Trawl",
+    Gear_type == "Agassiz_Trawl" ~ "Trawl",
+    Gear_type == "ROV" ~ "ROV",
+  )) %>% 
+  mutate(SOURCE = Gear_type) %>% 
+  mutate(AREA = "GSA_22") %>% 
+  rownames_to_column("ID") %>% 
+  unite("HAUL_ID", SOURCE,ID, sep = "_", remove = F) %>% 
+  dplyr :: rename(LON = Longitude, LAT=Latitude,DEPTH = Depth) %>% 
+  # Clean species name 
+  mutate(Espece = "FUNIQUA") %>% 
+  separate(Espece, c("GENUS", "SPECIES"), sep = 4)
+  
+GSA_20_22_23_FUNI <- fncols(GSA_20_22_23_FUNI,Cols_interest) %>%
+  dplyr :: select(all_of(Cols_interest)) %>% 
+  clean_class()
+```
+
+## Bind
+
+```{r}
+
+# Binding
+# -------
+
+Genus_interest   <- "FUNI"
+Species_interest <- "QUA"
+
+BIND_FUNI <- bind_rows(Medits, OBIS_FUNI, GBIF_FUNI, DATRAS_FUNI, EVHOE_FUNI, MEDSEACAN_FUNI, CORSEACAN_FUNI, GSA_20_22_23_FUNI,LANCAM_FUNI) 
+
+# Presence extraction
+FUNI_pre <- filter(BIND_FUNI, GENUS == Genus_interest & SPECIES == Species_interest) %>%
+  mutate(PRESENCE = T) %>% 
+  distinct_at(vars(LON, LAT), .keep_all =  T)
+
+# Absence extraction 
+FUNI_abs <- filter(BIND_FUNI, !AREA %in% c("GSA19", "GSA25")) %>% 
+  # Absence only in AREA for which we have presence data
+  filter(GENUS != Genus_interest & SPECIES != Species_interest) %>%
+  # ABSENCE or all GENUS different of FUNI
+  distinct_at(vars(LON, LAT), .keep_all =  T) %>% 
+  # Delete double records, in MEDITS, for the same haul, different species 
+  anti_join (FUNI_pre, by = "HAUL_ID") %>% 
+  # Avoid duplicate with presence records 
+  mutate (PRESENCE = F)
+
+# Bind
+FUNI <- bind_rows(FUNI_pre, FUNI_abs)
+
+# Last cleaning
+# -------------
+
+# Sf conversion
+FUNI_sf <- st_as_sf(FUNI,coords=c("LON","LAT"), crs = 4326)
+
+# Points on land (in atlantic_med box) are removed
+sf_use_s2(FALSE)
+coastline_atl_med <- read_sf("E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Country/land-polygons/coastline_atl_med.shp")
+
+FUNI_clean <- st_join(FUNI_sf, coastline_atl_med) %>% 
+  filter(is.na(FID))
+
+# Some points with inconsistent LON and LAT are removed 
+FUNI_clean <- FUNI_clean %>% 
+  filter(!HAUL_ID %in%
+           c(
+             "MEDITS_GSA17_2015_6",
+             "DYFS_BT6_11BR_2000_25",
+             "DYFS_BT6_11BR_2001_22",
+             "DYFS_BT6_11SS_2012_6"))
+             
+mapview(FUNI_clean["SOURCE"], col.region = rainbow(12), layer.name = "AREA")
+
+# Conversion in csv
+FUNI_csv <- FUNI_clean %>%
+    mutate(LON = unlist(map(FUNI_clean$geometry,1)),
+           LAT = unlist(map(FUNI_clean$geometry,2))) %>% 
+  as.data.frame()
+
+write.csv(FUNI_csv,"E:/PhD_2022_2023/Project/SDM/R/Data/Raw_data/Species/FUNI.csv")
+```
+
+## Map 
+
+```{r}
+# Map elements
+bathy_atl_med <- rast(here::here("Data/Raw_data/Environment/raster_resampling/Raster_res_5km/bathy_atl_med.tif")) %>% 
+  clamp(upper=0)
+
+# Sf conversion
+
+FUNI_sf_pre <- FUNI_clean %>% 
+  filter(PRESENCE == 1)
+
+FUNI_sf_abs <- FUNI_clean %>% 
+  filter(PRESENCE == 0)
+
+mapview(FUNI_sf["AREA"], col.region = rainbow(12), layer.name = "AREA")
+```
+
+
+```{r}
+# Maps
+
+FUNI_map_pre <- 
+  #tm_shape(coastline_atl_med) + tm_polygons(col = "snow2") + 
+  tm_shape(bathy_atl_med) + tm_raster(style = "cont", palette = "grey", title = "Bathymetry",legend.show = FALSE) +
+  tm_shape(FUNI_sf_pre) + tm_symbols(col = "SOURCE", size = 0.2, border.col = "black", border.lwd = 0.5, palette =  c("lightskyblue","orange4","peachpuff","springgreen1","purple2","indianred1","plum3","blue1","yellow1","orange"), title.col = "Source",legend.size.show = FALSE,
+  legend.col.show = FALSE) +
+  tm_graticules(labels.inside.frame = F, lines = F, labels.size = 0.9) +
+  tm_legend(outside = TRUE, outside.position = "right", legend.show = TRUE, legend.text.size = 2, legend.title.size = 3, legend.outside.size = 0.2) +
+  tm_layout(main.title = expression("Presence records of" ~italic("Funiculina quadrangularis")), main.title.size = 1.3, saturation = 1.5, frame = T, inner.margins = 0, legend.text.size = 1, legend.title.size = 1.5) +
+tm_add_legend('symbol', 
+	col = c("lightskyblue","orange4","darkolivegreen","peachpuff","springgreen1","purple2","indianred1","plum3","blue1","orange","yellow1"),
+	border.col = "black",
+	size = 1,
+	labels = c("BTS","BTS-VIII","DYFS","EVHOE","GBIF","LANCAM","MEDITS","NS-IBTS","OBIS","Trawl","ROV"),
+	title="Source")
+FUNI_map_pre
+
+tmap_save(FUNI_map_pre, "E:/PhD_2022_2023/Project/SDM/R/Output/Maps/Map_FUNI/funi_map_pre.png", width = 12, height = 7)
+
+
+FUNI_map_abs <- 
+  #tm_shape(coastline_atl_med) + tm_polygons(col = "snow2") + 
+  tm_shape(bathy_atl_med) + tm_raster(style = "cont", palette = "grey", title = "Bathymetry",legend.show = FALSE) +
+  tm_shape(FUNI_sf_abs) + tm_symbols(col = "SOURCE", size = 0.2, border.col = "black", border.lwd = 0.5
+, palette =  c("lightskyblue","grey","darkolivegreen","peachpuff","purple2","indianred1","orange","yellow1"), title.col = "Source",legend.size.show = FALSE,
+  legend.col.show = FALSE) +
+  tm_graticules(labels.inside.frame = F, lines = F, labels.size = 0.9) +
+  tm_legend(outside = TRUE, outside.position = "right", legend.show = TRUE, legend.text.size = 2, legend.title.size = 3, legend.outside.size = 0.2) +
+  tm_layout(main.title = expression("Absence records of" ~italic("Funiculina quadrangularis")), main.title.size = 1.3, saturation = 1.5, frame = T, inner.margins = 0, legend.text.size = 1, legend.title.size = 1.5)
+FUNI_map_abs
+
+tmap_save(FUNI_map_abs, "E:/PhD_2022_2023/Project/SDM/R/Output/Maps/Map_FUNI/funi_map_abs.png", width = 12, height = 7)
+
+```
+
+
+
+
+
+
+
